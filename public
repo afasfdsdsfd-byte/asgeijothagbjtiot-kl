@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>3D 멀티플레이 배틀</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Arial', sans-serif; user-select: none; touch-action: none; background: #000; }
+        
+        .overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            background: rgba(0, 0, 0, 0.85); color: white; z-index: 10;
+        }
+        
+        .card {
+            background: #222; padding: 25px; border-radius: 12px; text-align: center;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5); width: 380px; max-height: 80vh; display: flex; flex-direction: column;
+        }
+        
+        button { background: #ff4757; color: white; padding: 12px; margin: 6px 0; border-radius: 6px; border: none; font-size: 15px; cursor: pointer; font-weight: bold; width: 100%; }
+        button:hover { background: #ff6b81; }
+        .btn-join { background: #1e90ff; padding: 8px 16px; margin: 0; width: auto; font-size: 14px; }
+
+        .room-list { margin-top: 15px; overflow-y: auto; max-height: 200px; border: 1px solid #444; border-radius: 6px; padding: 5px; background: #111; }
+        .room-item { display: flex; justify-content: space-between; align-items: center; padding: 10px; border-bottom: 1px solid #333; font-size: 14px; }
+
+        .char-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin: 20px 0; max-width: 650px; }
+        .char-card { padding: 10px; border: 2px solid #555; border-radius: 8px; cursor: pointer; background: #333; text-align: center; font-size: 11px; }
+        .char-card.selected { border-color: #2ed573; background: #1e3799; font-weight: bold; }
+
+        #hud { position: absolute; top: 20px; left: 20px; color: white; font-size: 15px; z-index: 5; display: none; text-shadow: 1px 1px 3px black; }
+        .bar-container { width: 220px; height: 18px; background: #444; border-radius: 9px; overflow: hidden; margin-top: 4px; margin-bottom: 10px; border: 1px solid #666;}
+        #hp-bar { width: 100%; height: 100%; background: #ff4757; transition: width 0.1s; }
+        #ult-bar { width: 0%; height: 100%; background: linear-gradient(90deg, #f1c40f, #e67e22); transition: width 0.1s; }
+
+        #ult-btn {
+            display: none; position: absolute; bottom: 30px; right: 30px; width: 130px; height: 60px;
+            background: #555; color: #888; font-size: 15px; font-weight: bold;
+            border-radius: 30px; border: 3px solid #777; cursor: not-allowed; z-index: 6;
+        }
+        #ult-btn.ready {
+            background: linear-gradient(135deg, #f1c40f, #e67e22); color: black; border-color: white;
+            cursor: pointer; animation: pulse 1s infinite alternate; box-shadow: 0 0 15px #f1c40f;
+        }
+
+        #mobile-controls { display: none; position: absolute; bottom: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 6; }
+        #joystick-zone { position: absolute; bottom: 30px; left: 30px; width: 120px; height: 120px; background: rgba(255,255,255,0.15); border: 2px solid rgba(255,255,255,0.4); border-radius: 50%; pointer-events: auto; }
+        #joystick-knob { position: absolute; top: 35px; left: 35px; width: 50px; height: 50px; background: rgba(255,255,255,0.6); border-radius: 50%; pointer-events: none; }
+        #shoot-btn { position: absolute; bottom: 30px; right: 180px; width: 90px; height: 90px; background: rgba(255, 71, 87, 0.8); color: white; font-size: 16px; font-weight: bold; border-radius: 50%; border: 2px solid white; pointer-events: auto; display: flex; align-items: center; justify-content: center; }
+
+        @keyframes pulse { 0% { transform: scale(1); } 100% { transform: scale(1.08); } }
+        #crosshair { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 10px; height: 10px; border: 2px solid white; border-radius: 50%; pointer-events: none; z-index: 5; display: none; }
+        #notice { position: absolute; top: 20%; width: 100%; text-align: center; color: #f1c40f; font-size: 28px; font-weight: bold; z-index: 5; display: none; text-shadow: 2px 2px 4px black; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+
+    <div id="hud">
+        <div>팀: <span id="team-tag">-</span></div>
+        <div style="margin-top:5px;">체력 (HP: <span id="hp-val">500</span>/500)</div>
+        <div class="bar-container"><div id="hp-bar"></div></div>
+        <div>궁극기 게이지 (<span id="ult-count">0</span>/7 타)</div>
+        <div class="bar-container"><div id="ult-bar"></div></div>
+    </div>
+    
+    <button id="ult-btn" onclick="useUltimate()">⚡ 궁극기 (R)</button>
+    
+    <div id="mobile-controls">
+        <div id="joystick-zone"><div id="joystick-knob"></div></div>
+        <div id="shoot-btn">공격</div>
+    </div>
+
+    <div id="crosshair"></div>
+    <div id="notice"></div>
+
+    <!-- 로비 -->
+    <div id="lobby-screen" class="overlay">
+        <div class="card">
+            <h2>🌐 3D 온라인 멀티배틀</h2>
+            <button onclick="createRoom()">새 방 만들기</button>
+            <div style="text-align: left; font-size: 13px; margin-top: 15px; color: #aaa;">온라인 방 목록:</div>
+            <div class="room-list" id="room-list"><div style="color:#777; padding: 10px;">방 목록 불러오는 중...</div></div>
+        </div>
+    </div>
+
+    <!-- 대기실 -->
+    <div id="room-screen" class="overlay" style="display: none;">
+        <div class="card">
+            <h2>대기실</h2>
+            <p>방 이름: <b id="display-room-name" style="color: #eccc68; font-size:20px;"></b></p>
+            <p>접속 인원: <span id="player-count">1</span>명</p>
+            <button id="start-btn" onclick="goToCharSelect()">캐릭터 선택하기</button>
+        </div>
+    </div>
+
+    <!-- 캐릭터 선택 -->
+    <div id="char-screen" class="overlay" style="display: none;">
+        <h2>캐릭터를 선택하세요</h2>
+        <div class="char-grid" id="char-grid"></div>
+        <button id="confirm-char-btn" onclick="confirmCharacter()" style="width: 200px;">선택 완료</button>
+        <p id="char-wait-notice" style="display:none; color:#f1c40f; margin-top:10px;">다른 플레이어가 선택하길 기다리는 중...</p>
+    </div>
+
+    <script>
+        const socket = io();
+
+        const MAX_HP = 500;
+        const ULT_MAX_HITS = 7; 
+        const ULT_CHARGE_PER_HIT = 100 / ULT_MAX_HITS;
+
+        let myId = null;
+        let currentRoomId = null;
+        let players = {};
+        let myData = { id: '', team: '', charId: 0, hp: MAX_HP, ultGauge: 0, x: 0, z: 0, isDead: false };
+        let gameStarted = false;
+        let isMobile = false;
+
+        let scene, camera, renderer;
+        let playerMeshes = {}, projectileMeshes = [], particleEffects = [], areaHazards = [];
+        let keys = {};
+        let joystickInput = { x: 0, z: 0 };
+        let myMesh;
+        let cameraAngleY = 0;
+
+        const characters = [
+            { id: 0, name: "스나이퍼", color: 0xe74c3c, speed: 1.0, size: 0.1, damage: 85, ultName: "관통 빔" },
+            { id: 1, name: "빅캐논", color: 0x2ecc71, speed: 0.4, size: 0.5, damage: 110, ultName: "핵폭탄" },
+            { id: 2, name: "레이저", color: 0x3498db, speed: 1.2, size: 0.1, damage: 35, ultName: "하이퍼 연사" },
+            { id: 3, name: "플라즈마", color: 0x9b59b6, speed: 0.6, size: 0.3, damage: 60, ultName: "산탄 탄막" },
+            { id: 4, name: "화염탄", color: 0xe67e22, speed: 0.6, size: 0.25, damage: 50, ultName: "화염 폭풍" },
+            { id: 5, name: "빙결탄", color: 0x1abc9c, speed: 0.65, size: 0.2, damage: 55, ultName: "절대 0도" },
+            { id: 6, name: "중력탄", color: 0x34495e, speed: 0.45, size: 0.4, damage: 70, ultName: "블랙홀" },
+            { id: 7, name: "빛의 화살", color: 0xf1c40f, speed: 0.9, size: 0.15, damage: 65, ultName: "천상의 화살비" },
+            { id: 8, name: "암흑탄", color: 0x7f8c8d, speed: 0.5, size: 0.35, damage: 80, ultName: "보이드 유도탄" },
+            { id: 9, name: "수정탄", color: 0xe67e22, speed: 0.7, size: 0.2, damage: 60, ultName: "프리즘 분열" }
+        ];
+
+        function checkIsMobile() {
+            return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || window.innerWidth < 800;
+        }
+
+        socket.on('connect', () => {
+            myId = socket.id;
+            socket.emit('getRooms');
+        });
+
+        socket.on('roomList', (roomList) => { renderRoomList(roomList); });
+
+        socket.on('roomJoined', (data) => {
+            currentRoomId = data.roomId;
+            players = data.players;
+            myId = data.myId;
+            document.getElementById('lobby-screen').style.display = 'none';
+            document.getElementById('room-screen').style.display = 'flex';
+            document.getElementById('display-room-name').innerText = `방 #${currentRoomId.substring(5)}`;
+            updateRoomUI();
+        });
+
+        socket.on('updateRoomState', (data) => { players = data.players; updateRoomUI(); });
+        socket.on('startGame', (syncedPlayers) => { players = syncedPlayers; startGame(); });
+
+        socket.on('playerMoved', (data) => {
+            if (playerMeshes[data.id]) playerMeshes[data.id].position.set(data.x, 0.75, data.z);
+        });
+
+        socket.on('playerShot', (data) => {
+            spawnProjectile(data.x, data.z, data.dirX, data.dirZ, data.charId, data.ownerId, data.isUlt, data.extra);
+        });
+
+        socket.on('hitConfirmed', () => { increaseUltGauge(ULT_CHARGE_PER_HIT); });
+
+        socket.on('hpUpdated', (data) => {
+            if (players[data.id]) {
+                players[data.id].hp = data.hp;
+                players[data.id].isDead = data.isDead;
+            }
+            if (data.id === myId) {
+                myData.hp = data.hp;
+                myData.isDead = data.isDead;
+                document.getElementById('hp-bar').style.width = (myData.hp / MAX_HP * 100) + '%';
+                document.getElementById('hp-val').innerText = Math.ceil(myData.hp);
+                if (data.isDead) showNotice("사망하였습니다! (관전 모드)", 4000);
+            }
+        });
+
+        socket.on('gameOver', (data) => { showNotice(`게임 종료! ${data.winnerTeam} 팀 승리!`, 10000); });
+        socket.on('errorMsg', (msg) => alert(msg));
+
+        function createRoom() { socket.emit('createRoom'); }
+        function joinRoom(roomId) { socket.emit('joinRoom', roomId); }
+
+        function renderRoomList(roomList) {
+            const container = document.getElementById('room-list');
+            if (!roomList || roomList.length === 0) {
+                container.innerHTML = '<div style="color:#777; padding: 10px;">열려있는 방이 없습니다.</div>';
+                return;
+            }
+            container.innerHTML = '';
+            roomList.forEach(room => {
+                if(room.started) return;
+                const item = document.createElement('div');
+                item.className = 'room-item';
+                const count = Object.keys(room.players).length;
+                item.innerHTML = `<div><b>${room.name}</b> (${count}명)</div><button class="btn-join" onclick="joinRoom('${room.id}')">참여</button>`;
+                container.appendChild(item);
+            });
+        }
+
+        function updateRoomUI() {
+            document.getElementById('player-count').innerText = Object.keys(players).length;
+        }
+
+        function goToCharSelect() {
+            document.getElementById('room-screen').style.display = 'none';
+            document.getElementById('char-screen').style.display = 'flex';
+            const grid = document.getElementById('char-grid');
+            grid.innerHTML = '';
+            characters.forEach((c) => {
+                const el = document.createElement('div');
+                el.className = 'char-card';
+                el.style.backgroundColor = '#' + c.color.toString(16).padStart(6, '0');
+                el.innerHTML = `<b>${c.name}</b><br>궁극기: ${c.ultName}`;
+                el.onclick = () => {
+                    document.querySelectorAll('.char-card').forEach(x => x.classList.remove('selected'));
+                    el.classList.add('selected');
+                    myData.charId = c.id;
+                };
+                grid.appendChild(el);
+            });
+        }
+
+        function confirmCharacter() {
+            document.getElementById('confirm-char-btn').style.display = 'none';
+            document.getElementById('char-wait-notice').style.display = 'block';
+            socket.emit('selectChar', { roomId: currentRoomId, charId: myData.charId });
+        }
+
+        function increaseUltGauge(amount) {
+            if (myData.ultGauge >= 100) return;
+            myData.ultGauge = Math.min(100, myData.ultGauge + amount);
+            document.getElementById('ult-bar').style.width = myData.ultGauge + '%';
+            const hits = Math.floor(myData.ultGauge / ULT_CHARGE_PER_HIT + 0.01);
+            document.getElementById('ult-count').innerText = Math.min(ULT_MAX_HITS, hits);
+
+            if (myData.ultGauge >= 99.9) {
+                const ultBtn = document.getElementById('ult-btn');
+                ultBtn.classList.add('ready');
+                ultBtn.innerText = "⚡ 궁극기 사용";
+                showNotice("⚡ 궁극기 준비 완료!", 2500);
+            }
+        }
+
+        function startGame() {
+            myData = players[myId];
+            document.getElementById('char-screen').style.display = 'none';
+            document.getElementById('hud').style.display = 'block';
+            document.getElementById('ult-btn').style.display = 'block';
+            document.getElementById('crosshair').style.display = 'block';
+            document.getElementById('team-tag').innerText = myData.team;
+            document.getElementById('team-tag').style.color = myData.team === 'RED' ? '#ff4757' : '#1e90ff';
+
+            isMobile = checkIsMobile();
+            if (isMobile) {
+                document.getElementById('mobile-controls').style.display = 'block';
+                setupMobileControls();
+            }
+
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x111116);
+
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            const light = new THREE.DirectionalLight(0xffffff, 1.2);
+            light.position.set(10, 20, 15);
+            scene.add(light);
+            scene.add(new THREE.AmbientLight(0x555555));
+
+            createMapAndBarrier();
+
+            Object.values(players).forEach(p => {
+                const charInfo = characters[p.charId || 0];
+                const geometry = new THREE.BoxGeometry(1, 1.5, 1);
+                const material = new THREE.MeshLambertMaterial({ color: charInfo.color });
+                const mesh = new THREE.Mesh(geometry, material);
+
+                const spawnZ = p.team === 'RED' ? -15 : 15;
+                const spawnX = (Math.random() - 0.5) * 12;
+                mesh.position.set(spawnX, 0.75, spawnZ);
+
+                scene.add(mesh);
+                playerMeshes[p.id] = mesh;
+
+                if (p.id === myId) {
+                    myMesh = mesh;
+                    myData.x = spawnX;
+                    myData.z = spawnZ;
+                }
+            });
+
+            window.addEventListener('keydown', e => {
+                keys[e.code] = true;
+                if (e.code === 'KeyR') useUltimate();
+            });
+            window.addEventListener('keyup', e => keys[e.code] = false);
+            if (!isMobile) window.addEventListener('click', shoot);
+
+            let isDragging = false, prevMouseX = 0;
+            const handleRotateStart = (e) => {
+                if (e.target.closest('#mobile-controls') || e.target.closest('#hud') || e.target.closest('#ult-btn')) return;
+                isDragging = true;
+                prevMouseX = e.clientX || (e.touches && e.touches[0].clientX);
+            };
+            const handleRotateMove = (e) => {
+                if (isDragging) {
+                    const clientX = e.clientX || (e.touches && e.touches[0].clientX);
+                    const deltaX = clientX - prevMouseX;
+                    cameraAngleY -= deltaX * 0.005;
+                    prevMouseX = clientX;
+                }
+            };
+            const handleRotateEnd = () => isDragging = false;
+
+            window.addEventListener('mousedown', handleRotateStart);
+            window.addEventListener('mousemove', handleRotateMove);
+            window.addEventListener('mouseup', handleRotateEnd);
+            window.addEventListener('touchstart', handleRotateStart);
+            window.addEventListener('touchmove', handleRotateMove);
+            window.addEventListener('touchend', handleRotateEnd);
+
+            gameStarted = true;
+            animate();
+        }
+
+        function setupMobileControls() {
+            const zone = document.getElementById('joystick-zone');
+            const knob = document.getElementById('joystick-knob');
+            const shootBtn = document.getElementById('shoot-btn');
+            let touchId = null, center = { x: 0, y: 0 };
+
+            zone.addEventListener('touchstart', (e) => {
+                const touch = e.changedTouches[0];
+                touchId = touch.identifier;
+                const rect = zone.getBoundingClientRect();
+                center = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+            });
+
+            zone.addEventListener('touchmove', (e) => {
+                for (let i = 0; i < e.changedTouches.length; i++) {
+                    if (e.changedTouches[i].identifier === touchId) {
+                        const touch = e.changedTouches[i];
+                        let dx = touch.clientX - center.x;
+                        let dy = touch.clientY - center.y;
+                        const dist = Math.min(Math.sqrt(dx * dx + dy * dy), 40);
+                        const angle = Math.atan2(dy, dx);
+                        knob.style.transform = `translate(${Math.cos(angle) * dist}px, ${Math.sin(angle) * dist}px)`;
+                        joystickInput.x = (Math.cos(angle) * dist) / 40;
+                        joystickInput.z = (Math.sin(angle) * dist) / 40;
+                    }
+                }
+            });
+
+            const resetJoystick = (e) => {
+                for (let i = 0; i < e.changedTouches.length; i++) {
+                    if (e.changedTouches[i].identifier === touchId) {
+                        knob.style.transform = `translate(0px, 0px)`;
+                        joystickInput = { x: 0, z: 0 };
+                        touchId = null;
+                    }
+                }
+            };
+            zone.addEventListener('touchend', resetJoystick);
+            zone.addEventListener('touchcancel', resetJoystick);
+            shootBtn.addEventListener('touchstart', (e) => { e.preventDefault(); shoot(); });
+        }
+
+        function createMapAndBarrier() {
+            const floorGeo = new THREE.PlaneGeometry(40, 60);
+            const floorMat = new THREE.MeshBasicMaterial({ color: 0x1e272e, side: THREE.DoubleSide });
+            const floor = new THREE.Mesh(floorGeo, floorMat);
+            floor.rotation.x = Math.PI / 2;
+            scene.add(floor);
+
+            const wallGeo = new THREE.BoxGeometry(40, 10, 0.5);
+            const wallMat = new THREE.MeshLambertMaterial({ color: 0x00d2d3, transparent: true, opacity: 0.3 });
+            const wall = new THREE.Mesh(wallGeo, wallMat);
+            wall.position.set(0, 5, 0);
+            scene.add(wall);
+        }
+
+        function shoot() {
+            if (myData.isDead || !gameStarted) return;
+            const dirX = -Math.sin(cameraAngleY);
+            const dirZ = -Math.cos(cameraAngleY);
+
+            const bulletData = { x: myMesh.position.x, z: myMesh.position.z, dirX, dirZ, charId: myData.charId, ownerId: myId, isUlt: false };
+            spawnProjectile(bulletData.x, bulletData.z, dirX, dirZ, myData.charId, myId, false);
+            socket.emit('shoot', { roomId: currentRoomId, bulletData });
+        }
+
+        function useUltimate() {
+            if (myData.ultGauge < 99.9 || myData.isDead) return;
+
+            myData.ultGauge = 0;
+            document.getElementById('ult-bar').style.width = '0%';
+            document.getElementById('ult-count').innerText = '0';
+            const ultBtn = document.getElementById('ult-btn');
+            ultBtn.classList.remove('ready');
+            ultBtn.innerText = "⚡ 궁극기 (R)";
+
+            const dirX = -Math.sin(cameraAngleY);
+            const dirZ = -Math.cos(cameraAngleY);
+
+            const fireUlt = (extra = {}, pDirX = dirX, pDirZ = dirZ) => {
+                const bulletData = { x: myMesh.position.x, z: myMesh.position.z, dirX: pDirX, dirZ: pDirZ, charId: myData.charId, ownerId: myId, isUlt: true, extra };
+                spawnProjectile(bulletData.x, bulletData.z, pDirX, pDirZ, myData.charId, myId, true, extra);
+                socket.emit('shoot', { roomId: currentRoomId, bulletData });
+            };
+
+            switch(myData.charId) {
+                case 0: fireUlt({ pierce: true }); break;
+                case 1: fireUlt({ nuke: true }); break;
+                case 2:
+                    for(let i=0; i<20; i++) {
+                        setTimeout(() => {
+                            if(!myData.isDead) fireUlt({}, -Math.sin(cameraAngleY), -Math.cos(cameraAngleY));
+                        }, i * 35);
+                    }
+                    break;
+                case 3:
+                    for(let i=-7; i<=7; i++) {
+                        const angle = cameraAngleY + (i * 0.12);
+                        fireUlt({}, -Math.sin(angle), -Math.cos(angle));
+                    }
+                    break;
+                case 4: fireUlt({ flameField: true }); break;
+                case 5: fireUlt({ freeze: true }); break;
+                case 6: fireUlt({ blackhole: true }); break;
+                case 7:
+                    for(let i=0; i<8; i++) {
+                        setTimeout(() => {
+                            const targetZ = myData.team === 'RED' ? 10 + (Math.random()*10) : -10 - (Math.random()*10);
+                            const targetX = (Math.random() - 0.5) * 20;
+                            const bulletData = { x: targetX, z: targetZ - 1, dirX: 0, dirZ: 1, charId: 7, ownerId: myId, isUlt: true, extra: { skyFall: true } };
+                            spawnProjectile(targetX, targetZ - 1, 0, 1, 7, myId, true, { skyFall: true });
+                            socket.emit('shoot', { roomId: currentRoomId, bulletData });
+                        }, i * 100);
+                    }
+                    break;
+                case 8: fireUlt({ homing: true }); break;
+                case 9: fireUlt({ split: true }); break;
+            }
+        }
+
+        function spawnProjectile(x, z, dirX, dirZ, charId, ownerId, isUlt, extra = {}) {
+            const charInfo = characters[charId || 0];
+            let size = isUlt ? charInfo.size * 2.2 : charInfo.size;
+            let speed = isUlt ? charInfo.speed * 1.5 : charInfo.speed;
+            let damage = isUlt ? (charInfo.damage * 1.5) : (charInfo.damage * 0.25);
+            let color = isUlt ? 0xffff00 : charInfo.color;
+
+            if (extra.nuke) { size = 1.8; speed = 0.35; }
+            if (extra.pierce) { size = 0.3; speed = 2.5; }
+
+            const geo = new THREE.SphereGeometry(size, 16, 16);
+            const mat = new THREE.MeshBasicMaterial({ color: color });
+            const headMesh = new THREE.Mesh(geo, mat);
+
+            const startY = extra.skyFall ? 15 : 0.75;
+            headMesh.position.set(x, startY, z);
+            scene.add(headMesh);
+
+            const tailGeo = new THREE.BufferGeometry();
+            const positions = new Float32Array(15 * 3);
+            tailGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            const tailMat = new THREE.LineBasicMaterial({ color: color, transparent: true, opacity: 0.8 });
+            const tailLine = new THREE.Line(tailGeo, tailMat);
+            scene.add(tailLine);
+
+            projectileMeshes.push({
+                headMesh, tailLine, dirX, dirZ, ownerId, speed, damage, extra, color,
+                history: [new THREE.Vector3(x, startY, z)],
+                life: 140
+            });
+        }
+
+        function createExplosion(x, z, color, count = 15) {
+            for (let i = 0; i < count; i++) {
+                const pGeo = new THREE.SphereGeometry(0.15, 8, 8);
+                const pMat = new THREE.MeshBasicMaterial({ color: color });
+                const particle = new THREE.Mesh(pGeo, pMat);
+                particle.position.set(x, 0.75, z);
+                
+                const vx = (Math.random() - 0.5) * 0.5;
+                const vy = Math.random() * 0.4;
+                const vz = (Math.random() - 0.5) * 0.5;
+
+                scene.add(particle);
+                particleEffects.push({ mesh: particle, vx, vy, vz, life: 30 });
+            }
+        }
+
+        function createFlameField(x, z, ownerId) {
+            const geo = new THREE.CylinderGeometry(3, 3, 0.1, 16);
+            const mat = new THREE.MeshBasicMaterial({ color: 0xe67e22, transparent: true, opacity: 0.5 });
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.position.set(x, 0.05, z);
+            scene.add(mesh);
+            areaHazards.push({ mesh, x, z, ownerId, radius: 3, damage: 0.8, life: 180 });
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            if (!gameStarted) return;
+
+            if (!myData.isDead && myMesh) {
+                const moveSpeed = 0.15;
+                let moved = false;
+                const forwardX = -Math.sin(cameraAngleY);
+                const forwardZ = -Math.cos(cameraAngleY);
+                const rightX = Math.cos(cameraAngleY);
+                const rightZ = -Math.sin(cameraAngleY);
+
+                if (keys['KeyW']) { myMesh.position.x += forwardX * moveSpeed; myMesh.position.z += forwardZ * moveSpeed; moved = true; }
+                if (keys['KeyS']) { myMesh.position.x -= forwardX * moveSpeed; myMesh.position.z -= forwardZ * moveSpeed; moved = true; }
+                if (keys['KeyA']) { myMesh.position.x -= rightX * moveSpeed; myMesh.position.z -= rightZ * moveSpeed; moved = true; }
+                if (keys['KeyD']) { myMesh.position.x += rightX * moveSpeed; myMesh.position.z += rightZ * moveSpeed; moved = true; }
+
+                if (isMobile && (joystickInput.x !== 0 || joystickInput.z !== 0)) {
+                    myMesh.position.x += (rightX * joystickInput.x - forwardX * joystickInput.z) * moveSpeed;
+                    myMesh.position.z += (rightZ * joystickInput.x - forwardZ * joystickInput.z) * moveSpeed;
+                    moved = true;
+                }
+
+                if (myData.team === 'RED' && myMesh.position.z >= -0.7) myMesh.position.z = -0.7;
+                if (myData.team === 'BLUE' && myMesh.position.z <= 0.7) myMesh.position.z = 0.7;
+
+                myMesh.position.x = Math.max(-19, Math.min(19, myMesh.position.x));
+                myMesh.position.z = Math.max(-28, Math.min(28, myMesh.position.z));
+
+                if (moved) socket.emit('move', { roomId: currentRoomId, x: myMesh.position.x, z: myMesh.position.z });
+
+                const dist = 8;
+                camera.position.x = myMesh.position.x + Math.sin(cameraAngleY) * dist;
+                camera.position.z = myMesh.position.z + Math.cos(cameraAngleY) * dist;
+                camera.position.y = myMesh.position.y + 4;
+                camera.lookAt(myMesh.position.x, myMesh.position.y + 0.5, myMesh.position.z);
+            }
+
+            for (let i = projectileMeshes.length - 1; i >= 0; i--) {
+                const p = projectileMeshes[i];
+
+                if (p.extra.homing) {
+                    let targetPos = null;
+                    Object.values(players).forEach(other => {
+                        if (other.id !== p.ownerId && other.team !== players[p.ownerId]?.team && playerMeshes[other.id]) {
+                            targetPos = playerMeshes[other.id].position;
+                        }
+                    });
+                    if (targetPos) {
+                        p.dirX += (targetPos.x - p.headMesh.position.x) * 0.02;
+                        p.dirZ += (targetPos.z - p.headMesh.position.z) * 0.02;
+                    }
+                }
+
+                if (p.extra.skyFall) {
+                    p.headMesh.position.y -= 0.6;
+                    if (p.headMesh.position.y <= 0.75) p.headMesh.position.y = 0.75;
+                }
+
+                p.headMesh.position.x += p.dirX * p.speed;
+                p.headMesh.position.z += p.dirZ * p.speed;
+                p.life--;
+
+                if (p.extra.blackhole && myMesh && p.ownerId !== myId) {
+                    const distToMe = p.headMesh.position.distanceTo(myMesh.position);
+                    if (distToMe < 8) {
+                        myMesh.position.x += (p.headMesh.position.x - myMesh.position.x) * 0.05;
+                        myMesh.position.z += (p.headMesh.position.z - myMesh.position.z) * 0.05;
+                    }
+                }
+
+                p.history.unshift(p.headMesh.position.clone());
+                if (p.history.length > 5) p.history.pop();
+
+                const posArr = p.tailLine.geometry.attributes.position.array;
+                for (let j = 0; j < p.history.length; j++) {
+                    posArr[j * 3] = p.history[j].x;
+                    posArr[j * 3 + 1] = p.history[j].y;
+                    posArr[j * 3 + 2] = p.history[j].z;
+                }
+                p.tailLine.geometry.attributes.position.needsUpdate = true;
+
+                if (p.ownerId !== myId && !myData.isDead && myMesh) {
+                    const dist = p.headMesh.position.distanceTo(myMesh.position);
+                    if (dist < 1.4) {
+                        const attackerTeam = players[p.ownerId] ? players[p.ownerId].team : null;
+                        if (attackerTeam !== myData.team) {
+                            createExplosion(p.headMesh.position.x, p.headMesh.position.z, 0xff4757, p.extra.nuke ? 40 : 15);
+                            if (p.extra.flameField) createFlameField(p.headMesh.position.x, p.headMesh.position.z, p.ownerId);
+
+                            socket.emit('takeDamage', { roomId: currentRoomId, targetId: myId, damage: p.damage, attackerId: p.ownerId });
+
+                            if (!p.extra.pierce) {
+                                scene.remove(p.headMesh); scene.remove(p.tailLine);
+                                projectileMeshes.splice(i, 1);
+                                continue;
+                            }
+                        }
+                    }
+                }
+
+                if (p.life <= 0) {
+                    scene.remove(p.headMesh); scene.remove(p.tailLine);
+                    projectileMeshes.splice(i, 1);
+                }
+            }
+
+            for (let i = areaHazards.length - 1; i >= 0; i--) {
+                const h = areaHazards[i];
+                h.life--;
+                if (h.ownerId !== myId && !myData.isDead && myMesh) {
+                    const dist = new THREE.Vector2(myMesh.position.x - h.x, myMesh.position.z - h.z).length();
+                    if (dist < h.radius) {
+                        socket.emit('takeDamage', { roomId: currentRoomId, targetId: myId, damage: h.damage, attackerId: h.ownerId });
+                    }
+                }
+                if (h.life <= 0) {
+                    scene.remove(h.mesh);
+                    areaHazards.splice(i, 1);
+                }
+            }
+
+            for (let i = particleEffects.length - 1; i >= 0; i--) {
+                const pt = particleEffects[i];
+                pt.mesh.position.x += pt.vx;
+                pt.mesh.position.y += pt.vy;
+                pt.mesh.position.z += pt.vz;
+                pt.vy -= 0.02;
+                pt.life--;
+                if (pt.life <= 0) { scene.remove(pt.mesh); particleEffects.splice(i, 1); }
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        function showNotice(text, duration = 2000) {
+            const notice = document.getElementById('notice');
+            notice.innerText = text;
+            notice.style.display = 'block';
+            setTimeout(() => { notice.style.display = 'none'; }, duration);
+        }
+    </script>
+</body>
+</html>
